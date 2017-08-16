@@ -10,7 +10,7 @@ Creep Block Test Scenario for Episodic Reinforcement Learning
 `dota_launch_custom_game <name of your addon> dota`
 
 # How to use
-Create a webservice which listens to "http://localhost:5000/CreepBlockAI". A python example `webservice.py` is provided
+Create a machine learning algorithm integrated with a webservice which listens to "http://localhost:5000/CreepBlockAI". A python example `webservice.py` is provided
 
 The Test Scenario (Custom Map) will call that webservice automatically with POST requests
 
@@ -29,3 +29,6 @@ When the Test Scenario is running, the following data will be in the POST reques
 Note step 80 is the terminal state which is ~16s in game time. Roughly the amount of time for an unblocked creep wave to reach the middle
 
 All of this can be edited in `addon_game_mode.lua`
+
+# Speed up learning
+Use `host_timescale xx` in Dota 2 Console to speed up the game where xx is the scaling factor. On my machine, I am able to run at 5-10x speed stably even when calling a Tensorflow model.
