@@ -11,7 +11,7 @@ moves = ['N','NNE','NE','NEE',
 app = Flask(__name__)
     
 
-@app.route('/MidOnlyAI/service', methods=['POST'])
+@app.route('/CreepBlockAI/service', methods=['POST'])
 def get_scenario_command():
     global moves
     if request.json is None:
