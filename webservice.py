@@ -15,7 +15,7 @@ app = Flask(__name__)
 def get_scenario_command():
     global moves
     if request.json is None:
-        cmd = 'START'
+        cmd = 'STARTSCENARIO'
         print("Step: None, Cmd: %s" % cmd, file=sys.stderr)
     else:
         cmd = moves[np.random.randint(0,len(moves))]
