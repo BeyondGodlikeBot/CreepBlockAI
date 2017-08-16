@@ -53,7 +53,7 @@ function CreepBlockAI:Setup()
 	directions["NW"] = Vector( -0.707, 0.707, 0 )
 	directions["NNW"] = Vector( -0.383, 0.924, 0 )
 
-	baseURL = "http://localhost:5000/CreepBlockAI"
+	baseURL = "http://localhost:5000/CreepBlockAI/service"
 	
 	self:Reset()
 	hero:SetContextThink("BotThink", function() return self:BotThink() end, 0.2)
