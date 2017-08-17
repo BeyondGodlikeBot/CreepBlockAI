@@ -1,6 +1,8 @@
 # CreepBlockAI
 Creep Block Test Scenario for Episodic Reinforcement Learning 
 
+![Recording](/docs/recording.gif)
+
 # How to install
 1. Install Dota Workshop Tools
 2. Create an empty addon
