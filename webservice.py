@@ -1,26 +1,28 @@
 from flask import Flask, jsonify, request
-import sys
-import numpy as np
+from ActorCritic import Model
 
-global moves
-moves = ['N','NNE','NE','NEE',
-         'E','SEE','SE','SSE',
-         'S','SSW','SW','SWW',
-         'W','NWW','NW','NNW',
-         'STOP']
 app = Flask(__name__)
+
+m = Model()
+
+@app.route('/CreepBlockAI/model', methods=['GET'])
+def get_model():
+    return jsonify(m.get_update())
+
+@app.route('/CreepBlockAI/update', methods=['POST'])
+def update():
+    m.run(request.json)
+    return jsonify({})
+
+@app.route('/CreepBlockAI/dump', methods=['GET'])
+def dump():
+    m.dump()
+    return jsonify({})
     
-
-@app.route('/CreepBlockAI/service', methods=['POST'])
-def get_scenario_command():
-    global moves
-    if request.json is None:
-        cmd = 'STARTSCENARIO'
-        print("Step: None, Cmd: %s" % cmd, file=sys.stderr)
-    else:
-        cmd = moves[np.random.randint(0,len(moves))]
-        print("Step: %d, Cmd: %s" % (request.json['step'], cmd), file=sys.stderr)
-    return jsonify({'command': cmd})
-
-if __name__ == '__main__':    
+@app.route('/CreepBlockAI/load', methods=['POST'])
+def load():
+    m.load(request.json['file'])
+    return jsonify({})
+    
+if __name__ == '__main__':  
     app.run()
