@@ -13,7 +13,7 @@ def get_model():
 def update():
     m.run(request.json)
     return jsonify({})
-
+    
 @app.route('/CreepBlockAI/dump', methods=['GET'])
 def dump():
     m.dump()

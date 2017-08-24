@@ -7,15 +7,18 @@ import json
 
 class Model:
     def __init__(self):
+        tf.reset_default_graph()
+        
         self.ep = 0
-        self.boot_strap = 100
-        self.boost_strap_freq = 5
+        self.explore = 5
+        self.boot_strap = 0
+        self.boot_strap_freq = 5
+        self.replace_freq = 10
         self.target_replace_freq = 10
-        self.save_freq = 25        
+        self.save_freq = 25
         
         self.memory = Memory()
         self.policy_net = Net(POLICY_NET)
-        self.value_net = Net(VALUE_NET)
         
         self.sess = tf.InteractiveSession()
         self.sess.run(tf.global_variables_initializer())
@@ -23,24 +26,21 @@ class Model:
     def get_update(self):
         data = self.policy_net.get_weights(self.sess)
         data['boot_strap'] = self.boot_strap
-        data['replace'] = self.ep % self.target_replace_freq == 0
+        data['explore'] = self.explore
+        data['replace'] = (self.ep % self.replace_freq) == 0
         return data
         
     def dump(self):
-        data = { 'value_net' : self.value_net.get_weights(self.sess),
-                 'policy_net' : self.policy_net.get_weights(self.sess) }
+        data = self.policy_net.get_weights(self.sess)
         np.save('dump%d.npy' % self.ep,data)               
         
     def load(self, file):
         print("Loading: " + file, file=sys.stderr)
         data = np.load(file).item()   
-        self.value_net.set_weights( data['value_net'], self.sess )
-        self.policy_net.set_weights( data['policy_net'], self.sess )
+        self.policy_net.set_weights( self.sess, data )
         print("Sucess", file=sys.stderr)    
-                        
+                    
     def run(self,data):
-        with open('asd.txt','w') as f:
-            f.write(json.dumps(data))
         if data['ep'] == self.ep:
             print("Duplicate ep %d" % self.ep, file=sys.stderr)
             return            
@@ -55,28 +55,27 @@ class Model:
                 s_t, action, reward = zip(*batch)
                 
                 s_t = np.array(s_t, dtype=np.float32)
-                action = np.array(action, dtype=np.int32)
+                action = np.array(action, dtype=np.float32)
                 reward = np.array(reward, dtype=np.float32)
                 
-                _, value_loss, td_error = self.sess.run([self.value_net.optim, 
-                                                   self.value_net.loss, 
-                                                   self.value_net.delta],
-                                                   feed_dict={self.value_net.target : reward,
-                                                              self.value_net.s_t : s_t })
-                _, policy_loss = self.sess.run([self.policy_net.optim,
-                                                self.policy_net.loss],
-                                                feed_dict={self.policy_net.target : td_error,
-                                                           self.policy_net.s_t : s_t,
-                                                           self.policy_net.action : action})
-                
-                print("VLoss: %0.3f, PLoss: %0.3f" % (value_loss, policy_loss), file=sys.stderr)
-                
-                self.memory.update_batch_td_error(td_error)
+                _, policy_loss, log_loss = self.sess.run([self.policy_net.optim,
+                                                          self.policy_net.loss,
+                                                          self.policy_net.log_loss],
+                                                            feed_dict={self.policy_net.target : reward,
+                                                                       self.policy_net.s_t : s_t,
+                                                                       self.policy_net.action : action})
+
+                print("PLoss: %0.3f" % policy_loss, file=sys.stderr)
         
+                self.memory.update_batch_td_error(log_loss)
+                
         if not self.memory.full():
             print("Experience %d of %d gathered" % (self.memory.curr_idx, self.memory.mem_size), file=sys.stderr)
+        
+        if self.explore > 1:
+            self.explore -= 0.001
 
-        if self.ep % self.boost_strap_freq == 0:
+        if self.ep % self.boot_strap_freq == 0:
             self.boot_strap = 100
         else:
             self.boot_strap = 0         
@@ -94,13 +93,13 @@ class Model:
         for i in reversed(range(len(data) - 1)):
             d_t = data[str(i)]
             
-            R = d_t['r'] + 0.9*R
+            R = d_t['r'] + 0.7*R
             s_t.append(d_t['s'])
             action.append(d_t['a'])
             reward.append(R)
         
         s_t = np.array(s_t, dtype=np.float32)
-        action = np.array(action, dtype=np.int32) - 1
+        action = np.array(action, dtype=np.float32)
         reward = np.array(reward, dtype=np.float32)
         
         reward = np.clip(reward, -2, 2)
@@ -113,67 +112,26 @@ class Net:
     def __init__(self, net_type):
         self.s_t = tf.placeholder(dtype=tf.float32, shape=[None, 8])
         self.var = {}
-        scope = "value" if net_type == VALUE_NET else "policy"
-        with tf.variable_scope(scope):
-            self.var['W1'] = tf.get_variable('W1',shape=[2,50], initializer=tf.contrib.layers.xavier_initializer())
-            self.var['b1'] = tf.Variable(tf.zeros([50]), dtype=tf.float32)
-            self.var['W2'] = tf.get_variable('W2',shape=[50,50], initializer=tf.contrib.layers.xavier_initializer())
-            self.var['b2'] = tf.Variable(tf.zeros([50]), dtype=tf.float32)
-            self.var['W3'] = tf.get_variable('W3',shape=[25,25], initializer=tf.contrib.layers.xavier_initializer())
-            self.var['b3'] = tf.Variable(tf.zeros([25]), dtype=tf.float32)
-            if net_type == VALUE_NET:
-                self.var['W4'] = tf.get_variable('W4',shape=[25,1], initializer=tf.contrib.layers.xavier_initializer())
-                self.var['b4'] = tf.Variable(tf.zeros([1]), dtype=tf.float32)
-            else: #policy net
-                self.var['W4'] = tf.get_variable('W4',shape=[25,9], initializer=tf.contrib.layers.xavier_initializer())
-                self.var['b4'] = tf.Variable(tf.zeros([9]), dtype=tf.float32)
-            
-        
-        creeps = tf.split(self.s_t, num_or_size_splits=4, axis=1)
-        self.fc1 = [tf.nn.tanh(tf.matmul(c, self.var['W1']) + self.var['b1']) for c in creeps]
-        self.fc2 = [tf.nn.tanh(tf.matmul(f, self.var['W2']) + self.var['b2']) for f in self.fc1]
-        
-        features, weights = [], []
-        for f in self.fc2:
-            part1, part2 = tf.split(f, num_or_size_splits=2, axis=1)
-            
-            features.append(part1)
-            weights.append(part2)
-        
-        self.features = tf.stack(features, axis=2)
-        self.weights = tf.stack(weights, axis=2)
-        
-        self.max_weight = tf.reduce_max(self.weights, axis=2, keep_dims=True)
-        self.norm_weights = tf.exp(self.weights - self.max_weight)
-        self.norm_weights = self.norm_weights / tf.reduce_sum(self.norm_weights, axis=2, keep_dims=True)
-        
-        self.fc2_weighted = tf.reduce_sum(self.norm_weights * self.features, axis=2)
-        
-        self.fc3 = tf.nn.tanh(tf.matmul(self.fc2_weighted, self.var['W3']) + self.var['b3'])
-        self.fc4 = tf.matmul(self.fc3, self.var['W4']) + self.var['b4']
-        
+        self.var['W1'] = tf.get_variable('W1',shape=[8,256], initializer=tf.contrib.layers.xavier_initializer())
+        self.var['b1'] = tf.Variable(tf.zeros([256]), dtype=tf.float32)
+        self.var['W2'] = tf.get_variable('W2',shape=[256,128], initializer=tf.contrib.layers.xavier_initializer())
+        self.var['b2'] = tf.Variable(tf.zeros([128]), dtype=tf.float32)
+        self.var['W3'] = tf.get_variable('W3',shape=[128,60], initializer=tf.contrib.layers.xavier_initializer())
+        self.var['b3'] = tf.Variable(tf.zeros([60]), dtype=tf.float32)
+
+        self.fc1 = tf.nn.relu(tf.matmul(self.s_t, self.var['W1']) + self.var['b1'])
+        self.fc2 = tf.nn.relu(tf.matmul(self.fc1, self.var['W2']) + self.var['b2'])
+        self.fc3 = tf.matmul(self.fc2, self.var['W3']) + self.var['b3']
+                
+        self.pi, self.mu1, self.mu2 = Net.get_mixture_coef(self.fc3)
+                
         self.target = tf.placeholder(dtype=tf.float32, shape=[None])
-        if net_type == VALUE_NET:
-            self.v = tf.reshape(self.fc4, shape=[-1])
-            self.delta = self.target - self.v
+        self.action = tf.placeholder(dtype=tf.float32, shape=[None, 2])
+        self.action_x, self.action_y = tf.split(self.action, num_or_size_splits=2, axis=1)
+            
+        self.log_loss, self.temp = Net.log_likelihood(self.pi, self.mu1, self.mu2, 5.0, 5.0, 0.0, self.action_x, self.action_y)
+        self.loss = tf.reduce_mean(self.log_loss * self.target)
         
-            self.clipped_delta = tf.where(tf.abs(self.delta) < 1.0, 0.5 * tf.square(self.delta), tf.abs(self.delta) - 0.5)
-            
-            self.loss = tf.reduce_mean(self.clipped_delta)
-            
-        else: #policy net
-            self.action_softmax = tf.nn.softmax(self.fc4)
-            
-            self.entropy = -tf.reduce_sum(self.action_softmax * tf.log(self.action_softmax), axis=1)
-            self.entropy = tf.reduce_mean(self.entropy)
-            
-            self.action = tf.placeholder(dtype=tf.int32, shape=[None])
-            action_one_hot = tf.one_hot(self.action, 9) 
-            self.action_p = tf.reduce_sum(self.action_softmax * action_one_hot, reduction_indices=1)
-                                   
-            self.loss = -(tf.log(self.action_p) * self.target + 0.01 * self.entropy)
-            self.loss = tf.reduce_mean(self.loss)
-            
         self.optim = tf.train.RMSPropOptimizer(
                       learning_rate=0.001, momentum=0.95, epsilon=0.01).minimize(self.loss)
              
@@ -188,7 +146,41 @@ class Net:
             var = self.var[k]
             value = np.array(v, dtype=np.float32)
             sess.run(tf.assign(var, value))
-        
+
+    def tf_2d_normal(x1, x2, mu1, mu2, s1, s2, rho):
+      norm1 = tf.subtract(x1, mu1)
+      norm2 = tf.subtract(x2, mu2)
+      s1s2 = tf.multiply(s1, s2)
+      z = tf.square(tf.div(norm1, s1))+tf.square(tf.div(norm2, s2))-2*tf.div(tf.multiply(rho, tf.multiply(norm1, norm2)), s1s2)
+      negRho = 1-tf.square(rho)
+      result = tf.exp(tf.div(-z,2*negRho))
+      denom = 2*np.pi*tf.multiply(s1s2, tf.sqrt(negRho))
+      result = tf.div(result, denom)
+      return result
+
+    def log_likelihood(pi, mu1, mu2, sigma1, sigma2, corr, x1_data, x2_data):
+      result0 = Net.tf_2d_normal(x1_data, x2_data, mu1, mu2, sigma1, sigma2, corr)
+      
+      result = tf.multiply(result0, pi)
+      result = tf.reduce_sum(result, axis=1, keep_dims=True)
+      result = -tf.log(tf.maximum(result, 1e-20)) # at the beginning, some errors are exactly zero.
+
+      return result, result0
+
+    # below is where we need to do MDN splitting of distribution params
+    def get_mixture_coef(output):
+      z = output
+      z_pi, z_mu1, z_mu2 = tf.split(axis=1, num_or_size_splits=3, value=z)
+
+      max_pi = tf.reduce_max(z_pi, axis=1, keep_dims=True)
+      z_pi = tf.subtract(z_pi, max_pi)
+      z_pi = tf.exp(z_pi)
+      normalize_pi = tf.reciprocal(tf.reduce_sum(z_pi, axis=1, keep_dims=True))
+      z_pi = tf.multiply(normalize_pi, z_pi)
+
+
+      return [z_pi, z_mu1, z_mu2]
+            
 class Memory:
     def __init__(self):
         self.curr_idx = 0
@@ -246,3 +238,4 @@ class Memory:
             leaf = self.mem_size - 1 + self.batch_idx[i]
             self.priority[leaf] = priority[i]
             self.update_priority(leaf)
+            
