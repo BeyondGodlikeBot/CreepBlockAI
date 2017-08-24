@@ -21,7 +21,7 @@ Every 10 episodes, the online target network is replaced with the online policy 
 # How to install
 1. Install Dota Workshop Tools
 2. Create an empty addon
-3. Copy `addon_game_mode.lua` into the appropiate addon folder (overwrite the file)
+3. Copy `addon_game_mode.lua` from creep_block_ai into the appropiate addon folder (overwrite the file)
 4. Launch Dota Workshop Tools with your created addon
 5. Open vConsole and execute 
 `dota_launch_custom_game <name of your addon> dota`
