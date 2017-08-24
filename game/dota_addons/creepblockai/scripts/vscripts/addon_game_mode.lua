@@ -25,7 +25,7 @@ function CreepBlockAI:OnGameRulesStateChange()
 		SendToServerConsole( "dota_dev forcegamestart" )
 		
 	elseif  s == DOTA_GAMERULES_STATE_GAME_IN_PROGRESS then
-		GameRules:GetGameModeEntity():SetThink("Setup", self, 2)
+		GameRules:GetGameModeEntity():SetThink("Setup", self, 5)
 	end
 end
 
@@ -38,19 +38,9 @@ function CreepBlockAI:Setup()
 	t1Pos = t1:GetAbsOrigin()
 	t1_c = t1Pos.y + t1Pos.x + 2000
 	
-	heroSpeed = hero:GetBaseMoveSpeed()
-	
 	PlayerResource:SetCameraTarget(0, hero)
 	
-	directions = {}
-	directions[1] = Vector( 0, 1, 0 ) --N
-	directions[2] = Vector( 0.707, 0.707, 0 ) --NE
-	directions[3] = Vector( 1, 0, 0 ) --E
-	directions[4] = Vector( 0.707, -0.707, 0 ) --SE
-	directions[5] = Vector( 0, -1, 0 ) --S
-	directions[6] = Vector( -0.707, -0.707, 0 ) --SW
-	directions[7] = Vector( -1, 0, 0 ) --W
-	directions[8] = Vector( -0.707, 0.707, 0 ) --NW
+	heroSpeed = hero:GetBaseMoveSpeed()
 	
 	baseURL = "http://localhost:5000/CreepBlockAI"
 	
@@ -74,7 +64,7 @@ function CreepBlockAI:MainLoop()
 		request:Send( 	function( result ) 
 							if result["StatusCode"] == 200 and ai_state == STATE_GETMODEL then
 								local data = package.loaded['game/dkjson'].decode(result['Body'])
-								self:Update(data)
+								self:UpdateModel(data)
 								
 								Say(hero, "Loaded Latest Model", false)								
 								Say(hero, "Starting Episode " .. ep, false)
@@ -108,20 +98,16 @@ function CreepBlockAI:BotLoop()
 		return 0.2
 	end
 			
-	local terminal = self:UpdateSAR()
+	self:UpdatePositions()
+	
+	local terminal, action = self:UpdateSAR()
 	if terminal then
 		self:Reset()
 		ai_state = STATE_SENDDATA
 		return 0.2
 	end
 	
-	local action = SAR[t]['a']
-
-	if action == 9 then
-		hero:Stop()
-	else
-		hero:MoveToPosition(hPos + heroSpeed*directions[action]) --let it run as far as it can, also action + 1 is to convert 0 index to 1 index
-	end
+	hero:MoveToPosition(hPos + action)
 		
 	if t > 0 then
 		Say(hero, "Gained Reward " .. SAR[t-1]['r'], false)
@@ -134,17 +120,19 @@ end
 
 --------------------------------------------------------------------------------
 
-function CreepBlockAI:UpdateSAR()
+function CreepBlockAI:UpdatePositions()
 	hPos = hero:GetAbsOrigin()
 	cPos = {}
 	for i = 1,4 do
 		cPos[i] = creeps[i]:GetAbsOrigin()
 	end
-	
+end
+
+function CreepBlockAI:UpdateSAR()	
 	local s_t = {}
 	for i = 1,4 do
-		s_t[i*2-1] = (cPos[i].x - hPos.x) / (2 * heroSpeed) --rough normalization factor
-		s_t[i*2] = (cPos[i].y - hPos.y) / (2 * heroSpeed)
+		s_t[i*2-1] = (cPos[i].x - hPos.x) / heroSpeed
+		s_t[i*2] = (cPos[i].y - hPos.y) / heroSpeed
 	end
 	
 	local action = self:Run(s_t)
@@ -158,9 +146,9 @@ function CreepBlockAI:UpdateSAR()
 				if dist < 20 then
 					reward = reward + 0.5
 				elseif dist < 40 then
-					reward = reward + 0.25	
+					reward = reward + 0.35	
 				elseif dist < 60 then
-					reward = reward + 0.1
+					reward = reward + 0.2
 				end
 			end
 		end
@@ -170,8 +158,7 @@ function CreepBlockAI:UpdateSAR()
 	
 	last_cPos = cPos
 	
-	SAR[t] = { s=s_t, a=action, r=0 }
-	
+	local terminal = false
 	local c1 = hPos.y + hPos.x + 100
 	local min_dist = 100000
 	local target = Vector(0,0,0)
@@ -180,14 +167,19 @@ function CreepBlockAI:UpdateSAR()
 		local x = (c1 - c2) / 2.0
 		local y = -x + c1
 		if cPos[i].y > (-cPos[i].x + c1) then
-			return true
+			SAR[t-1]['r'] = SAR[t-1]['r'] - 1
+			terminal = true
 		end
 		if cPos[i].y > (-cPos[i].x + t1_c) then
-			return true
+			terminal = true
 		end
 	end
-		
-	return false
+	
+	if not terminal then
+		SAR[t] = { s=s_t, a={action.x, action.y}, r=0 }
+	end
+	
+	return terminal, action
 end
 
 --------------------------------------------------------------------------------
@@ -223,70 +215,54 @@ end
 
 --------------------------------------------------------------------------------
 
-function CreepBlockAI:Update(data)
+function CreepBlockAI:UpdateModel(data)
+	self.explore = data.explore
 	self.boot_strap = data.boot_strap
-	
-	if data.replace or self.ep == 1 then
+	if ep == 1 or data.replace then
 		self.W1 = data.W1
 		self.b1 = data.b1
 		self.W2 = data.W2
 		self.b2 = data.b2
 		self.W3 = data.W3
 		self.b3 = data.b3
-		self.W4 = data.W4
-		self.b4 = data.b4
 	end
-	
-	Say(hero, "BootStrap(%): " .. self.boot_strap, false)
 end
 
 function CreepBlockAI:Run(s_t)
-	local action = 1
-	local a = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+	local action = Vector(0,0,0)
 	if RandomInt(1,100) <= self.boot_strap then
 		action = self:BestMoveEst()
-		a[action] = 1
+		DebugDrawCircle(hPos + Vector(action[1],action[2],0), Vector(0,255,0), 255, 25, true, 0.2)
 	else	
-		local fc1, fc2 = {}, {}
-		for i = 1,4 do
-			local s_t_creep = { s_t[i*2-1], s_t[i*2] }
-			fc1[i] = TANH(FC(s_t_creep, self.W1, self.b1))
-			fc2[i] = TANH(FC(s_t_creep, self.W2, self.b2))
-		end
+		local fc1 = RELU(FC(s_t, self.W1, self.b1))
+		local fc2 = RELU(FC(fc1, self.W2, self.b2))
+		local fc3 = FC(fc2, self.W3, self.b3)
 		
-		local features, weights = {}, {}
-		for i = 1,4 do
-			features[i], weights[i] = SPLIT(fc2[i])
+		local weight = {}
+		local max_i = 1
+		for i = 1,20 do
+			weight[i] = math.exp(fc3[i])
+			if weight[i] > weight[max_i] then
+				max_i = i
+			end
 		end
-		
-		local max_weights = MAX2D(weights)
-		local norm_weights = ELEMENTWISE_SUB(weights, max_weights)
-		local norm_weights = SOFTMAX2D(norm_weights)
-		local features_pooled = REDUCESUM(ELEMENTWISE_MUL(features,norm_weights))
-		
-		local fc3 = TANH(FC(features_pooled, self.W3, self.b3))
-		a = FC(fc3, self.W4, self.b4)
-		a = SOFTMAX(a)
-		action = SAMPLE(a)
-	end
-	
-	for i = 1,8 do
-		if action == i then
-			DebugDrawCircle(hPos + heroSpeed*directions[i], Vector(0,255,0), 255 * a[i] / a[action], 25, true, 0.2)
-		else
-			DebugDrawCircle(hPos + heroSpeed*directions[i], Vector(255,0,0), 255 * a[i] / a[action], 25, true, 0.2)
+				
+		for i = 1,20 do
+			if i == max_i then
+				DebugDrawCircle(hPos + Vector(fc3[20+i],fc3[40+i],0), Vector(0,255,0), 255, 25, true, 0.2)
+			else
+				DebugDrawCircle(hPos + Vector(fc3[20+i],fc3[40+i],0), Vector(255,0,0), 255*weight[i]/weight[max_i], 25, true, 0.2)
+			end
 		end
-	end
-	if action == 9 then
-		DebugDrawCircle(hPos, Vector(0,255,0), 255 * a[9] / a[action], 25, true, 0.2)
-	else
-		DebugDrawCircle(hPos, Vector(255,0,0), 255 * a[9] / a[action], 25, true, 0.2)
+		action = Vector(fc3[max_i+20],fc3[max_i+40],0)
+		action.x = action.x + RandomFloat(-self.explore,self.explore)
+		action.y = action.y + RandomFloat(-self.explore,self.explore)
 	end
 	
 	return action
 end
 
-function CreepBlockAI:BestMoveEst()
+function CreepBlockAI:ClosestCreep()
 	local closest = 10000
 	for i = 1,4 do
 		local dist = (hPos - cPos[i]):Length2D()
@@ -294,10 +270,11 @@ function CreepBlockAI:BestMoveEst()
 			closest = dist
 		end
 	end
-	if closest > 500 then
-		return 9
-	end
-		
+	return closest
+end
+
+function CreepBlockAI:BestMoveEst()
+	local action = Vector(0,0,0)
 		
 	local c1 = hPos.y + hPos.x
 	local min_dist = 100000
@@ -316,26 +293,14 @@ function CreepBlockAI:BestMoveEst()
 	end
 	
 	if target.x == 0 then
-		return 2
-	end
-	
-	
-	local target_direction = target - hPos
-	DebugDrawCircle(target, Vector(0,255,0), 100, 25, true, 0.3)
-	if target_direction:Length2D() < 50 then
-		return 9
+		action.x = 100
+		action.y = 100
 	else
-		local best_diff = 1000000
-		local dir = 1
-		for i = 1,8 do
-			local diff = (directions[i] - target_direction):Length2D()
-			if diff < best_diff then
-				dir = i
-				best_diff = diff
-			end
-		end
-		return dir
+		action.x = target.x - hPos.x
+		action.y = target.y - hPos.y
 	end
+		
+	return action
 end
 
 function FC(x, W, b)
@@ -360,116 +325,4 @@ function RELU(x)
 		end
 	end
 	return y
-end
-
-function TANH(x)
-	local y = {}
-	for i = 1,#x do
-		y[i] = math.tanh(x[i])
-	end
-	return y
-end
-
-function SPLIT(x)
-	local n = #x/2
-	local x1 = {}  
-	local x2 = {}
-	for j = 1,n do
-		x1[j] = x[j] 
-		x2[j] = x[n+j]
-	end
-	return x1, x2
-end
-
-function MAX2D(x)
-	local max_x = {}
-	for i = 1,#x do
-		for j = 1,#x[1] do
-			if i == 1 or x[i][j] > max_x[j] then
-				max_x[j] = x[i][j]
-			end
-		end
-	end
-	return max_x
-end
-
-function ELEMENTWISE_SUB(x,y)
-	local z = {}
-	for i = 1,#x do
-		z[i] = {}
-		for j = 1,#x[1] do
-			z[i][j] = x[i][j] - y[j]
-		end
-	end
-	return z
-end
-
-function REDUCESUM(x)
-	local z = {}
-	for j = 1,#x[1] do
-		z[j] = x[1][j]
-		for i = 2,#x do
-			z[j] = z[j] + x[i][j]
-		end
-	end
-	return z
-end
-
-function SOFTMAX(x)
-	local x_exp = {}
-	local x_exp_sum = 0
-	for i = 1,#x do
-		x_exp[i] = math.exp(x[i])
-		x_exp_sum = x_exp_sum + x_exp[i]
-	end
-	for i = 1,#x do
-		x_exp[i] = x_exp[i] / x_exp_sum
-	end
-	return x_exp
-end
-
-function SOFTMAX2D(x)
-	local x_exp = {}
-	local x_exp_sum = {}
-	for i = 1,#x do
-		x_exp[i] = {}
-		for j = 1,#x[1] do
-			x_exp[i][j] = math.exp(x[i][j])
-			if i == 1 then
-				x_exp_sum[j] = x_exp[i][j]
-			else
-				x_exp_sum[j] = x_exp_sum[j] + x_exp[i][j]
-			end
-		end
-	end
-	for i = 1,#x do
-		for j = 1,#x[1] do
-			x_exp[i][j] = x_exp[i][j] / x_exp_sum[j]
-		end
-	end
-	return x_exp
-end
-
-
-function ELEMENTWISE_MUL(x,y)
-	local z = {}
-	for i = 1,#x do
-		z[i] = {}
-		for j = 1,#x[1] do
-			z[i][j] = x[i][j] * y[i][j]
-		end
-	end
-	return z
-end
-
-function SAMPLE(p)
-	local r = RandomFloat(0.0, 1.0)
-	for i = 1,#p do
-		if r < p[i] then
-			return i
-		else
-			r = r - p[i]
-		end
-	end
-	return #p
 end
